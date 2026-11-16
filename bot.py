@@ -10,26 +10,45 @@ import requests
 
 # ====== 設定（ここを書き換えるだけで調整できます） ======
 FEEDS = [
-    {
-        "name": "NHK 主要ニュース",
-        "url": "https://www3.nhk.or.jp/rss/news/cat0.xml",
-        "prefix": "🇯🇵",
-        "lang": "ja",
-    },
-    {
-        "name": "RNZ ニュース",
-        "url": "https://www.rnz.co.nz/rss/national.xml",
-        "prefix": "🇳🇿",
-        "lang": "en",
-    },
+    # ---- 日本（日本語） ----
+    {"name": "NHK 主要", "url": "https://www3.nhk.or.jp/rss/news/cat0.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "NHK 社会", "url": "https://www3.nhk.or.jp/rss/news/cat1.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "NHK 政治", "url": "https://www3.nhk.or.jp/rss/news/cat4.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "NHK 経済", "url": "https://www3.nhk.or.jp/rss/news/cat5.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "NHK 国際", "url": "https://www3.nhk.or.jp/rss/news/cat6.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "Yahoo 主要", "url": "https://news.yahoo.co.jp/rss/topics/top-picks.xml", "prefix": "🇯🇵", "lang": "ja"},
+    # ---- ニュージーランド（英語） ----
+    # メイン: 1News（ニュース用サイトマップ形式）
+    {"name": "1News", "url": "https://www.1news.co.nz/arc/outboundfeeds/news-sitemap/?outputType=xml",
+     "type": "newssitemap", "prefix": "🇳🇿", "lang": "en", "max": 4},
+    # サブ: RNZ
+    {"name": "RNZ 国内", "url": "https://www.rnz.co.nz/rss/national.xml", "prefix": "🇳🇿", "lang": "en", "max": 2},
 ]
-MAX_POSTS_PER_FEED = 2   # 1回の実行で、1つのフィードから投稿する最大件数
+MAX_POSTS_PER_FEED = 3   # 1回の実行で、1つのフィードから投稿する最大件数
 STATE_FILE = "posted.json"  # 投稿済みURLの記録（重複投稿防止）
 MAX_TEXT = 300           # Blueskyの文字数上限
 # =========================================================
 
 PDS = "https://bsky.social"
 UA = {"User-Agent": "news-bot/1.0 (+https://bsky.app)"}
+
+
+def fetch_news_sitemap(url):
+    """Googleニュース形式のサイトマップから (title, link) を新しい順で返す。"""
+    r = requests.get(url, headers=UA, timeout=30)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    sm = "{http://www.sitemaps.org/schemas/sitemap/0.9}"
+    nw = "{http://www.google.com/schemas/sitemap-news/0.9}"
+    rows = []
+    for u in root.iter(sm + "url"):
+        link = (u.findtext(sm + "loc") or "").strip()
+        title = (u.findtext(f"{nw}news/{nw}title") or "").strip()
+        date = u.findtext(f"{nw}news/{nw}publication_date") or ""
+        if link and title:
+            rows.append((date, title, link))
+    rows.sort(reverse=True)
+    return [(t, l) for _, t, l in rows]
 
 
 def fetch_items(url):
@@ -124,12 +143,16 @@ def main():
 
     for feed in FEEDS:
         try:
-            items = fetch_items(feed["url"])
+            if feed.get("type") == "newssitemap":
+                items = fetch_news_sitemap(feed["url"])
+            else:
+                items = fetch_items(feed["url"])
         except Exception as e:
             print(f"[skip] {feed['name']}: 取得失敗 {e}", file=sys.stderr)
             continue
 
-        new = [(t, l) for t, l in items if l not in seen][:MAX_POSTS_PER_FEED]
+        limit = feed.get("max", MAX_POSTS_PER_FEED)
+        new = [(t, l) for t, l in items if l not in seen][:limit]
         print(f"{feed['name']}: 新着 {len(new)} 件")
         for title, link in reversed(new):  # 古い順に投稿
             text, facets = build_post(feed["prefix"], title, link)
