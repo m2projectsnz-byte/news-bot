@@ -12,24 +12,29 @@ import requests
 # ====== 設定（ここを書き換えるだけで調整できます） ======
 FEEDS = [
     # ---- 日本（日本語） ----
-    {"name": "NHK 主要", "url": "https://www3.nhk.or.jp/rss/news/cat0.xml", "prefix": "🇯🇵", "lang": "ja"},
-    {"name": "NHK 社会", "url": "https://www3.nhk.or.jp/rss/news/cat1.xml", "prefix": "🇯🇵", "lang": "ja"},
-    {"name": "NHK 政治", "url": "https://www3.nhk.or.jp/rss/news/cat4.xml", "prefix": "🇯🇵", "lang": "ja"},
-    {"name": "NHK 経済", "url": "https://www3.nhk.or.jp/rss/news/cat5.xml", "prefix": "🇯🇵", "lang": "ja"},
-    {"name": "NHK 国際", "url": "https://www3.nhk.or.jp/rss/news/cat6.xml", "prefix": "🇯🇵", "lang": "ja"},
-    {"name": "Yahoo 主要", "url": "https://news.yahoo.co.jp/rss/topics/top-picks.xml", "prefix": "🇯🇵", "lang": "ja"},
-    # Yahoo のカテゴリ別（URLが違う場合はログに [skip] と出るだけで、他には影響しません）
+    # NHK は2026年8月以降、旧RSS（www3.nhk.or.jp）が止まっています。新しい場所（NHK ONE）を使います。
+    # 新しいURLの cat0 は確認済みの情報です。社会・政治は同じ形式で推測したものなので、
+    # ログに [skip] や「最新記事の日時」が古いと出たら、その行を削除してください。
+    {"name": "NHK 主要", "url": "https://news.web.nhk/n-data/conf/na/rss/cat0.xml", "prefix": "🇯🇵", "lang": "ja", "max": 2},
+    {"name": "NHK 社会", "url": "https://news.web.nhk/n-data/conf/na/rss/cat1.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "NHK 政治", "url": "https://news.web.nhk/n-data/conf/na/rss/cat4.xml", "prefix": "🇯🇵", "lang": "ja"},
+    {"name": "Yahoo 主要", "url": "https://news.yahoo.co.jp/rss/topics/top-picks.xml", "prefix": "🇯🇵", "lang": "ja", "max": 2},
     {"name": "Yahoo 国内", "url": "https://news.yahoo.co.jp/rss/topics/domestic.xml", "prefix": "🇯🇵", "lang": "ja"},
     {"name": "Yahoo 国際", "url": "https://news.yahoo.co.jp/rss/topics/world.xml", "prefix": "🇯🇵", "lang": "ja"},
     {"name": "Yahoo 経済", "url": "https://news.yahoo.co.jp/rss/topics/business.xml", "prefix": "🇯🇵", "lang": "ja"},
+    # 新聞社。産経は公式のRSSがなく、第三者のサイト（assets.wor.jp）が作っているものを使います。
+    # そのため、予告なく止まる可能性があります。動かなければログに [skip] と出るだけで、他には影響しません。
+    {"name": "産経新聞 速報", "url": "https://assets.wor.jp/rss/rdf/sankei/flash.rdf", "prefix": "🇯🇵", "lang": "ja"},
+    # 朝日新聞（公式の配信。URLは一覧サイトの情報で、未確認です）
+    {"name": "朝日新聞 見出し", "url": "https://www.asahi.com/rss/asahi/newsheadlines.rdf", "prefix": "🇯🇵", "lang": "ja"},
     # ---- ニュージーランド（英語） ----
     # メイン: 1News（ニュース用サイトマップ形式）
     {"name": "1News", "url": "https://www.1news.co.nz/arc/outboundfeeds/news-sitemap/?outputType=xml",
-     "type": "newssitemap", "prefix": "🇳🇿", "lang": "en", "max": 4},
+     "type": "newssitemap", "prefix": "🇳🇿", "lang": "en", "max": 3},
     # サブ: RNZ
-    {"name": "RNZ 国内", "url": "https://www.rnz.co.nz/rss/national.xml", "prefix": "🇳🇿", "lang": "en", "max": 2},
+    {"name": "RNZ 国内", "url": "https://www.rnz.co.nz/rss/national.xml", "prefix": "🇳🇿", "lang": "en", "max": 1},
 ]
-MAX_POSTS_PER_FEED = 3   # 1回の実行で、1つのフィードから投稿する最大件数
+MAX_POSTS_PER_FEED = 1   # 1回の実行で、1つのフィードから投稿する最大件数（"max" で個別に変更可）
 STATE_FILE = "posted.json"  # 投稿済みURLの記録（重複投稿防止）
 STATE_KEEP = 5000        # 記録するURLの最大数（少ないと古い記事が再投稿されます）
 MAX_AGE_HOURS = 72       # これより古い記事は投稿しない（更新が止まったフィード対策）
@@ -88,10 +93,20 @@ def fetch_items(url):
     r.raise_for_status()
     root = ET.fromstring(r.content)
     items = []
-    for it in root.iter("item"):  # RSS 2.0
-        title = (it.findtext("title") or "").strip()
-        link = (it.findtext("link") or "").strip()
-        d = parse_date(it.findtext("pubDate") or it.findtext("{http://purl.org/dc/elements/1.1/}date"))
+
+    def child(el, name):
+        """名前空間（RSS 1.0/RDF形式など）に関係なく、子要素の文字列を取り出す。"""
+        for c in el:
+            if c.tag.rsplit("}", 1)[-1] == name and c.text:
+                return c.text.strip()
+        return ""
+
+    for it in root.iter():  # RSS 2.0 と RSS 1.0（RDF、朝日など）
+        if it.tag.rsplit("}", 1)[-1] != "item":
+            continue
+        title = child(it, "title")
+        link = child(it, "link")
+        d = parse_date(child(it, "pubDate") or child(it, "date"))
         if title and link:
             items.append((title, link, d))
     if not items:  # Atom
